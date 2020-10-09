@@ -1,24 +1,18 @@
 package sqlitestore
 
+//TODO: use _test package ?
+
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/swithek/sessionup"
 )
-
-type sqliteError int
-
-func (err sqliteError) Error() string {
-	return fmt.Sprintf("Error code %d", err)
-}
-
-const primaryKeyConstraintErrorCode = 794
 
 var expectedDiskError = errors.New("Disk error")
 
@@ -45,7 +39,7 @@ func TestCreate(t *testing.T) {
 		Expect        func()
 		ExpectedError error
 	}{
-		/* "should return Duplicate ID error": {
+		"should return Duplicate ID error": {
 			Expect: func() {
 				mock.ExpectExec(query).WithArgs(
 					session.CreatedAt,
@@ -55,10 +49,12 @@ func TestCreate(t *testing.T) {
 					session.IP.String(),
 					session.Agent.OS,
 					session.Agent.Browser,
-				).WillReturnError(sqliteError(primaryKeyConstraintErrorCode))
+				).WillReturnError(sqlite3.Error{
+					ExtendedCode: sqlite3.ErrConstraintUnique,
+				})
 			},
 			ExpectedError: sessionup.ErrDuplicateID,
-		}, */
+		},
 		"should return other kinds of error": {
 			Expect: func() {
 				mock.ExpectExec(query).WithArgs(

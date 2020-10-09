@@ -15,12 +15,12 @@ go get github.com/Hyzual/sessionup-sqlitestore
 ```go
 db, err := sql.Open("sqlite3", "...")
 if err != nil {
-      // handle error
+    // handle error
 }
 
 store, err := sqlitestore.New(db, "sessions", time.Minute * 5)
 if err != nil {
-      // handle error
+    // handle error
 }
 
 manager := sessionup.NewManager(store)

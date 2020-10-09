@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/swithek/sessionup"
 )
 
@@ -23,8 +24,8 @@ type SqliteStore struct {
 	tableName string
 }
 
-func (store *SqliteStore) New(db *sql.DB, tableName string) (*SqliteStore, error) {
-	store = &SqliteStore{db: db, tableName: tableName}
+func New(db *sql.DB, tableName string) (*SqliteStore, error) {
+	store := &SqliteStore{db: db, tableName: tableName}
 	_, err := store.db.Exec(fmt.Sprintf(createTableQuery, store.tableName))
 	if err != nil {
 		return nil, err
@@ -46,10 +47,9 @@ func (store *SqliteStore) Create(ctx context.Context, session sessionup.Session)
 		wrapNullString(session.Agent.OS),
 		wrapNullString(session.Agent.Browser),
 	)
-	//TODO: figure out the real error codes sent by go-sqlite3
-	/* if err != nil {
+	if sqliteErr, ok := err.(sqlite3.Error); ok && sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique {
 		return sessionup.ErrDuplicateID
-	} */
+	}
 	return err
 }
 
