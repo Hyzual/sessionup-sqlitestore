@@ -1,11 +1,11 @@
 package sqlitestore
 
-//TODO: use _test package ?
-
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,14 +17,11 @@ import (
 var expectedDiskError = errors.New("Disk error")
 
 func TestCreate(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("did not expect an error while opening a stub database connection, got one %v", err)
-	}
+	db, mock := mockDB(t)
 	defer db.Close()
 	store := SqliteStore{db: db, tableName: "sessions"}
 
-	query := "INSERT INTO sessions"
+	query := "INSERT INTO sessions VALUES ($1, $2, $3, $4, $5, $6, $7);"
 	session := sessionup.Session{
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now(),
@@ -97,4 +94,141 @@ func TestCreate(t *testing.T) {
 			}
 		})
 	}
+}
+
+type check func(*testing.T, sessionup.Session, bool, error)
+
+func expectNoError() check {
+	return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
+		t.Helper()
+		if actual != nil {
+			t.Errorf("expected no error but got one: %v", actual)
+		}
+	}
+}
+
+func expectAnError(expected error) check {
+	return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
+		t.Helper()
+		if actual != expected {
+			t.Errorf("expected an error %v but got %v", expected, actual)
+		}
+	}
+}
+
+func assertSessionMatches(expected sessionup.Session, expectSessionIsFound bool) check {
+	return func(t *testing.T, actual sessionup.Session, actualSessionIsFound bool, _ error) {
+		t.Helper()
+		if actualSessionIsFound != expectSessionIsFound {
+			t.Errorf("want %t, got %t", expectSessionIsFound, actualSessionIsFound)
+		}
+
+		if !reflect.DeepEqual(expected, actual) {
+			t.Errorf("want %v, got %v", expected, actual)
+		}
+	}
+}
+
+func checks(cc ...check) []check {
+	return cc
+}
+
+func TestFetchByID(t *testing.T) {
+	db, mock := mockDB(t)
+	defer db.Close()
+	store := SqliteStore{db: db, tableName: "sessions"}
+
+	query := "SELECT * FROM sessions WHERE id = $1 AND expires_at > datetime('now', 'localtime')"
+	session := sessionup.Session{
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour * 1),
+		ID:        "id",
+		UserKey:   "key",
+		IP:        net.ParseIP("127.0.0.1"),
+	}
+	session.Agent.OS = "GNU/Linux"
+	session.Agent.Browser = "Firefox"
+
+	tests := map[string]struct {
+		Expect func()
+		Checks []check
+	}{
+		"should return found = false when it gets sql.ErrNoRows": {
+			Expect: func() {
+				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnError(sql.ErrNoRows)
+			},
+			Checks: checks(
+				expectNoError(),
+				assertSessionMatches(sessionup.Session{}, false),
+			),
+		},
+		"should return other kinds of error": {
+			Expect: func() {
+				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnError(expectedDiskError)
+			},
+			Checks: checks(
+				expectAnError(expectedDiskError),
+				assertSessionMatches(sessionup.Session{}, false),
+			),
+		},
+		"should return a Session and found = true": {
+			Expect: func() {
+				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser"}).
+					AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP.String(), session.Agent.OS, session.Agent.Browser)
+				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnRows(rows)
+			},
+			Checks: checks(
+				expectNoError(),
+				assertSessionMatches(session, true),
+			),
+		},
+	}
+
+	for testName, testDefinition := range tests {
+		t.Run(testName, func(t *testing.T) {
+			testDefinition.Expect()
+			retrievedSession, ok, err := store.FetchByID(context.Background(), session.ID)
+			for _, currentCheck := range testDefinition.Checks {
+				currentCheck(t, retrievedSession, ok, err)
+			}
+
+			if err = mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("there were unfulfilled expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestWrapNullString(t *testing.T) {
+	s := wrapNullString("")
+	if s.Valid {
+		t.Errorf("expected empty string to be invalid, but it was valid")
+	}
+	if s.String != "" {
+		t.Errorf("want %q, got %q", "", s.String)
+	}
+
+	s = wrapNullString("<nil>")
+	if s.Valid {
+		t.Errorf("expected <nil> string to be invalid, but it was valid")
+	}
+	if s.String != "" {
+		t.Errorf("want %q, got %q", "", s.String)
+	}
+
+	s = wrapNullString("valid string")
+	if !s.Valid {
+		t.Errorf("expected test string to be valid, but it was not")
+	}
+	if s.String == "" {
+		t.Errorf("want %q, got %q", "valid string", s.String)
+	}
+}
+
+func mockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("did not expect an error while opening a stub database connection, got one: %v", err)
+	}
+	return db, mock
 }

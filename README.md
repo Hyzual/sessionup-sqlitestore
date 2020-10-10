@@ -27,6 +27,8 @@ manager := sessionup.NewManager(store)
 ```
 
 TODO: Links to continue:
+https://github.com/swithek/sessionup/blob/master/store.go
+
 https://stackoverflow.com/questions/25965584/separating-unit-tests-and-integration-tests-in-go
 
 https://github.com/swithek/sessionup-pgstore/blob/master/pgstore.go
