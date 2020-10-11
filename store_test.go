@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"testing"
@@ -96,49 +97,47 @@ func TestCreate(t *testing.T) {
 	}
 }
 
-type check func(*testing.T, sessionup.Session, bool, error)
-
-func expectNoError() check {
-	return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
-		t.Helper()
-		if actual != nil {
-			t.Errorf("expected no error but got one: %v", actual)
-		}
-	}
-}
-
-func expectAnError(expected error) check {
-	return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
-		t.Helper()
-		if actual != expected {
-			t.Errorf("expected an error %v but got %v", expected, actual)
-		}
-	}
-}
-
-func assertSessionMatches(expected sessionup.Session, expectSessionIsFound bool) check {
-	return func(t *testing.T, actual sessionup.Session, actualSessionIsFound bool, _ error) {
-		t.Helper()
-		if actualSessionIsFound != expectSessionIsFound {
-			t.Errorf("want %t, got %t", expectSessionIsFound, actualSessionIsFound)
-		}
-
-		if !reflect.DeepEqual(expected, actual) {
-			t.Errorf("want %v, got %v", expected, actual)
-		}
-	}
-}
-
-func checks(cc ...check) []check {
-	return cc
-}
-
 func TestFetchByID(t *testing.T) {
+	type check func(*testing.T, sessionup.Session, bool, error)
+
+	checks := func(cc ...check) []check { return cc }
+
+	expectNoError := func() check {
+		return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
+			t.Helper()
+			if actual != nil {
+				t.Errorf("expected no error but got one: %v", actual)
+			}
+		}
+	}
+
+	expectAnError := func(expected error) check {
+		return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
+			t.Helper()
+			if actual != expected {
+				t.Errorf("expected an error %v but got %v", expected, actual)
+			}
+		}
+	}
+
+	assertSessionMatches := func(expected sessionup.Session, expectSessionIsFound bool) check {
+		return func(t *testing.T, actual sessionup.Session, actualSessionIsFound bool, _ error) {
+			t.Helper()
+			if actualSessionIsFound != expectSessionIsFound {
+				t.Errorf("want %t, got %t", expectSessionIsFound, actualSessionIsFound)
+			}
+
+			if !reflect.DeepEqual(expected, actual) {
+				t.Errorf("want %v, got %v", expected, actual)
+			}
+		}
+	}
+
 	db, mock := mockDB(t)
 	defer db.Close()
 	store := SqliteStore{db: db, tableName: "sessions"}
 
-	query := "SELECT * FROM sessions WHERE id = $1 AND expires_at > datetime('now', 'localtime')"
+	query := "SELECT * FROM sessions WHERE id = $1 AND expires_at > datetime('now', 'localtime');"
 	session := sessionup.Session{
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(time.Hour * 1),
@@ -190,6 +189,105 @@ func TestFetchByID(t *testing.T) {
 			retrievedSession, ok, err := store.FetchByID(context.Background(), session.ID)
 			for _, currentCheck := range testDefinition.Checks {
 				currentCheck(t, retrievedSession, ok, err)
+			}
+
+			if err = mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("there were unfulfilled expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestFetchByUserKey(t *testing.T) {
+	type check func(*testing.T, []sessionup.Session, error)
+
+	checks := func(cc ...check) []check { return cc }
+
+	expectNoError := func() check {
+		return func(t *testing.T, _ []sessionup.Session, actual error) {
+			t.Helper()
+			if actual != nil {
+				t.Errorf("expected no error but got one: %v", actual)
+			}
+		}
+	}
+
+	expectAnError := func(expected error) check {
+		return func(t *testing.T, _ []sessionup.Session, actual error) {
+			t.Helper()
+			if actual != expected {
+				t.Errorf("expected an error %v but got %v", expected, actual)
+			}
+		}
+	}
+
+	assertSessionsMatch := func(expected []sessionup.Session) check {
+		return func(t *testing.T, actual []sessionup.Session, _ error) {
+			t.Helper()
+			if !reflect.DeepEqual(expected, actual) {
+				t.Errorf("want %v, got %v", expected, actual)
+			}
+		}
+	}
+
+	db, mock := mockDB(t)
+	defer db.Close()
+	key := "key"
+	store := SqliteStore{db: db, tableName: "sessions"}
+
+	query := "SELECT * FROM sessions WHERE user_key = $1;"
+
+	generateSessions := func() []sessionup.Session {
+		var res []sessionup.Session
+		for i := 0; i < 3; i++ {
+			res = append(res, sessionup.Session{ID: fmt.Sprintf("id%d", i)})
+		}
+		return res
+	}
+
+	tests := map[string]struct {
+		Expect func()
+		Checks []check
+	}{
+		"should return nil when it gets sql.ErrNoRows": {
+			Expect: func() {
+				mock.ExpectQuery(query).WithArgs(key).WillReturnError(sql.ErrNoRows)
+			},
+			Checks: checks(
+				expectNoError(),
+				assertSessionsMatch(nil),
+			),
+		},
+		"should return other kinds of error": {
+			Expect: func() {
+				mock.ExpectQuery(query).WithArgs(key).WillReturnError(expectedDiskError)
+			},
+			Checks: checks(
+				expectAnError(expectedDiskError),
+				assertSessionsMatch(nil),
+			),
+		},
+		"should return found sessions": {
+			Expect: func() {
+				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser"})
+				for _, session := range generateSessions() {
+					rows.AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP, session.Agent.OS, session.Agent.Browser)
+				}
+				mock.ExpectQuery(query).WithArgs(key).WillReturnRows(rows)
+			},
+			Checks: checks(
+				expectNoError(),
+				assertSessionsMatch(generateSessions()),
+			),
+		},
+	}
+
+	for testName, testDefinition := range tests {
+		t.Run(testName, func(t *testing.T) {
+			testDefinition.Expect()
+			retrievedSessions, err := store.FetchByUserKey(context.Background(), key)
+			for _, currentCheck := range testDefinition.Checks {
+				currentCheck(t, retrievedSessions, err)
 			}
 
 			if err = mock.ExpectationsWereMet(); err != nil {

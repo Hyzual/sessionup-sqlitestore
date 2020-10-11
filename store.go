@@ -68,7 +68,7 @@ func wrapNullString(s string) sql.NullString {
 
 // FetchByID implements sessionup.Store interface's FetchByID method.
 func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.Session, bool, error) {
-	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND expires_at > datetime('now', 'localtime')", store.tableName)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND expires_at > datetime('now', 'localtime');", store.tableName)
 	row := store.db.QueryRowContext(ctx, query, id)
 
 	var session sessionup.Session
@@ -88,4 +88,42 @@ func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.S
 	session.Agent.OS = os.String
 	session.Agent.Browser = browser.String
 	return session, true, nil
+}
+
+// FetchByUserKey implements sessionup.Store interface's FetchByUserKey method.
+func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]sessionup.Session, error) {
+	query := fmt.Sprintf("SELECT * FROM %s WHERE user_key = $1;", store.tableName)
+	rows, err := store.db.QueryContext(ctx, query, key)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	var foundSessions []sessionup.Session
+	for rows.Next() {
+		var session sessionup.Session
+		var ip, os, browser sql.NullString
+
+		err := rows.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+
+		if ip.Valid {
+			session.IP = net.ParseIP(ip.String)
+		}
+
+		session.Agent.OS = os.String
+		session.Agent.Browser = browser.String
+
+		foundSessions = append(foundSessions, session)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return foundSessions, nil
 }
