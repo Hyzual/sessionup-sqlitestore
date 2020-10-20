@@ -16,7 +16,7 @@ import (
 	"github.com/swithek/sessionup"
 )
 
-var expectedDiskError = errors.New("Disk error")
+var errDiskError = errors.New("Disk error")
 
 func TestCreate(t *testing.T) {
 	db, mock := mockDB(t)
@@ -64,9 +64,9 @@ func TestCreate(t *testing.T) {
 					session.IP.String(),
 					session.Agent.OS,
 					session.Agent.Browser,
-				).WillReturnError(expectedDiskError)
+				).WillReturnError(errDiskError)
 			},
-			ExpectedError: expectedDiskError,
+			ExpectedError: errDiskError,
 		},
 		"successful create": {
 			Expect: func() {
@@ -181,10 +181,10 @@ func TestFetchByID(t *testing.T) {
 		},
 		"should return other kinds of error": {
 			Expect: func() {
-				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnError(expectedDiskError)
+				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnError(errDiskError)
 			},
 			Checks: checks(
-				expectAnError(expectedDiskError),
+				expectAnError(errDiskError),
 				assertSessionMatches(sessionup.Session{}, false),
 			),
 		},
@@ -269,10 +269,10 @@ func TestFetchByUserKey(t *testing.T) {
 		},
 		"should return other kinds of error": {
 			Expect: func() {
-				mock.ExpectQuery(query).WithArgs(key).WillReturnError(expectedDiskError)
+				mock.ExpectQuery(query).WithArgs(key).WillReturnError(errDiskError)
 			},
 			Checks: checks(
-				expectAnError(expectedDiskError),
+				expectAnError(errDiskError),
 				assertSessionsMatch(nil),
 			),
 		},
@@ -311,7 +311,7 @@ func TestDeleteByID(t *testing.T) {
 	query := "DELETE FROM sessions WHERE id = $1;"
 
 	t.Run("when there is an error, it should return it", func(t *testing.T) {
-		mock.ExpectExec(query).WithArgs(id).WillReturnError(expectedDiskError)
+		mock.ExpectExec(query).WithArgs(id).WillReturnError(errDiskError)
 		err := store.DeleteByID(context.Background(), id)
 		if err == nil {
 			t.Errorf("expected an error but did not get one")
@@ -344,9 +344,9 @@ func TestDeleteByUserKey(t *testing.T) {
 		"should return errors when deleting": {
 			Expect: func() {
 				query := "DELETE FROM sessions WHERE user_key = $1;"
-				mock.ExpectExec(query).WithArgs(key).WillReturnError(expectedDiskError)
+				mock.ExpectExec(query).WithArgs(key).WillReturnError(errDiskError)
 			},
-			ExpectedError: expectedDiskError,
+			ExpectedError: errDiskError,
 		},
 		"deletes all sessions by user key": {
 			Expect: func() {
@@ -358,10 +358,10 @@ func TestDeleteByUserKey(t *testing.T) {
 			Expect: func() {
 				query := "DELETE FROM sessions WHERE user_key = $1 AND id NOT IN (?,?,?);"
 				expectedParams := append([]driver.Value{key}, "id1", "id2", "id3")
-				mock.ExpectExec(query).WithArgs(expectedParams...).WillReturnError(expectedDiskError)
+				mock.ExpectExec(query).WithArgs(expectedParams...).WillReturnError(errDiskError)
 			},
 			SessionIDsToKeep: ids,
-			ExpectedError:    expectedDiskError,
+			ExpectedError:    errDiskError,
 		},
 		"deletes all sessions except the IDs given in parameter": {
 			Expect: func() {
@@ -393,9 +393,9 @@ func TestDeleteExpired(t *testing.T) {
 	query := "DELETE FROM sessions WHERE expires_at < datetime('now', 'localtime');"
 
 	t.Run("when there is an error, it should return it", func(t *testing.T) {
-		mock.ExpectExec(query).WillReturnError(expectedDiskError)
+		mock.ExpectExec(query).WillReturnError(errDiskError)
 		err := store.deleteExpired()
-		assertError(t, expectedDiskError, err)
+		assertError(t, errDiskError, err)
 		assertExpectationsWereMet(t, mock)
 	})
 

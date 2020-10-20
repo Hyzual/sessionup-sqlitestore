@@ -25,6 +25,7 @@ const createTableQuery = `CREATE TABLE IF NOT EXISTS %s (
 	agent_browser TEXT
 );`
 
+// SqliteStore is a SQLite implementation of sessionup.Store.
 type SqliteStore struct {
 	db        *sql.DB
 	tableName string
