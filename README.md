@@ -9,7 +9,7 @@ SQLite session store implementation for [sessionup](https://github.com/swithek/s
 
 ## Installation
 ```sh
-go get github.com/Hyzual/sessionup-sqlitestore
+go get github.com/hyzual/sessionup-sqlitestore
 ```
 
 ## Usage
