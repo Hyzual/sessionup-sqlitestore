@@ -95,6 +95,32 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestWrapNullString(t *testing.T) {
+	s := wrapNullString("")
+	if s.Valid {
+		t.Errorf("expected empty string to be invalid, but it was valid")
+	}
+	if s.String != "" {
+		t.Errorf("want %q, got %q", "", s.String)
+	}
+
+	s = wrapNullString("<nil>")
+	if s.Valid {
+		t.Errorf("expected <nil> string to be invalid, but it was valid")
+	}
+	if s.String != "" {
+		t.Errorf("want %q, got %q", "", s.String)
+	}
+
+	s = wrapNullString("valid string")
+	if !s.Valid {
+		t.Errorf("expected test string to be valid, but it was not")
+	}
+	if s.String == "" {
+		t.Errorf("want %q, got %q", "valid string", s.String)
+	}
+}
+
 func TestFetchByID(t *testing.T) {
 	type check func(*testing.T, sessionup.Session, bool, error)
 
@@ -359,30 +385,26 @@ func TestDeleteByUserKey(t *testing.T) {
 	}
 }
 
-func TestWrapNullString(t *testing.T) {
-	s := wrapNullString("")
-	if s.Valid {
-		t.Errorf("expected empty string to be invalid, but it was valid")
-	}
-	if s.String != "" {
-		t.Errorf("want %q, got %q", "", s.String)
-	}
+func TestDeleteExpired(t *testing.T) {
+	db, mock := mockDB(t)
+	defer db.Close()
 
-	s = wrapNullString("<nil>")
-	if s.Valid {
-		t.Errorf("expected <nil> string to be invalid, but it was valid")
-	}
-	if s.String != "" {
-		t.Errorf("want %q, got %q", "", s.String)
-	}
+	store := SqliteStore{db: db, tableName: "sessions"}
+	query := "DELETE FROM sessions WHERE expires_at < datetime('now', 'localtime');"
 
-	s = wrapNullString("valid string")
-	if !s.Valid {
-		t.Errorf("expected test string to be valid, but it was not")
-	}
-	if s.String == "" {
-		t.Errorf("want %q, got %q", "valid string", s.String)
-	}
+	t.Run("when there is an error, it should return it", func(t *testing.T) {
+		mock.ExpectExec(query).WillReturnError(expectedDiskError)
+		err := store.deleteExpired()
+		assertError(t, expectedDiskError, err)
+		assertExpectationsWereMet(t, mock)
+	})
+
+	t.Run("deletes all the expired sessions in DB", func(t *testing.T) {
+		mock.ExpectExec(query).WillReturnResult(sqlmock.NewResult(0, 1))
+		err := store.deleteExpired()
+		assertNoError(t, err)
+		assertExpectationsWereMet(t, mock)
+	})
 }
 
 func mockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {

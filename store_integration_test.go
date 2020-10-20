@@ -20,44 +20,61 @@ func TestSessionByIDIntegration(t *testing.T) {
 	}
 	defer db.Close()
 
-	store, err := sqlitestore.New(db, "sessions")
+	store, err := sqlitestore.New(db, "sessions", 0)
 	if err != nil {
 		t.Fatalf("could not create a new sessions table: %v", err)
 	}
 
-	id := "id"
-	session := sessionup.Session{
+	validSession := sessionup.Session{
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(time.Hour * 1),
-		ID:        id,
+		ID:        "valid",
 		UserKey:   "key",
 		IP:        net.ParseIP("127.0.0.1"),
 	}
-	err = store.Create(context.Background(), session)
-	if err != nil {
-		t.Fatalf("could not create a session: %v", err)
+	expiredSession := sessionup.Session{
+		CreatedAt: time.Now().Add(time.Hour * -2),
+		ExpiresAt: time.Now().Add(time.Hour * -1),
+		ID:        "expired",
+		UserKey:   "key",
+		IP:        net.ParseIP("127.0.0.1"),
+	}
+	sessions := []sessionup.Session{validSession, expiredSession}
+	for _, s := range sessions {
+		err = store.Create(context.Background(), s)
+		if err != nil {
+			t.Fatalf("could not create a session: %v", err)
+		}
 	}
 
-	retrievedSession, ok, err := store.FetchByID(context.Background(), id)
+	retrievedSession, ok, err := store.FetchByID(context.Background(), "valid")
 	if err != nil {
 		t.Fatalf("unexpected error while fetching the session by its ID: %v", err)
 	}
 	if !ok {
 		t.Fatalf("expected to find session by its ID, but it was not found")
 	}
-	assertSessionEquals(t, retrievedSession, session)
+	assertSessionEquals(t, retrievedSession, validSession)
 
-	err = store.DeleteByID(context.Background(), id)
+	err = store.DeleteByID(context.Background(), "valid")
 	if err != nil {
 		t.Fatalf("unexpected error while deleting the session by its ID: %v", err)
 	}
 
-	_, ok, err = store.FetchByID(context.Background(), id)
+	_, ok, err = store.FetchByID(context.Background(), "valid")
 	if err != nil {
 		t.Fatalf("unexpected error while fetching again the session by its ID: %v", err)
 	}
 	if ok {
 		t.Fatalf("expected to no longer find the session by its ID after deleting it, but it was found")
+	}
+
+	_, ok, err = store.FetchByID(context.Background(), "expired")
+	if err != nil {
+		t.Fatalf("unexpected error while fetching the expired session by its ID: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected not to find an expired session by its ID, but it was found")
 	}
 }
 
@@ -69,7 +86,7 @@ func TestSessionsByUserKeyIntegration(t *testing.T) {
 	}
 	defer db.Close()
 
-	store, err := sqlitestore.New(db, "sessions")
+	store, err := sqlitestore.New(db, "sessions", 0)
 	if err != nil {
 		t.Fatalf("could not create a new sessions table: %v", err)
 	}
@@ -140,6 +157,74 @@ func TestSessionsByUserKeyIntegration(t *testing.T) {
 	}
 }
 
+func TestExpiredSessionsCleanupIntegration(t *testing.T) {
+	db, err := sql.Open("sqlite3", "file:database.db?mode=memory")
+	if err != nil {
+		db.Close()
+		t.Fatalf("could not open in-memory database: %v", err)
+	}
+	defer db.Close()
+
+	store, err := sqlitestore.New(db, "sessions", time.Millisecond*20)
+	if err != nil {
+		t.Fatalf("could not create a new sessions table: %v", err)
+	}
+
+	firstExpiredSession := sessionup.Session{
+		CreatedAt: time.Now().Add(time.Hour * -2),
+		ExpiresAt: time.Now().Add(time.Hour * -1),
+		ID:        "first",
+		UserKey:   "key",
+		IP:        net.ParseIP("127.0.0.1"),
+	}
+	secondExpiredSession := sessionup.Session{
+		CreatedAt: time.Now().Add(time.Hour * -3),
+		ExpiresAt: time.Now().Add(time.Hour * -2),
+		ID:        "second",
+		UserKey:   "key",
+		IP:        net.ParseIP("127.0.0.1"),
+	}
+	sessions := []sessionup.Session{firstExpiredSession, secondExpiredSession}
+
+	createSessions := func() {
+		for _, s := range sessions {
+			err = store.Create(context.Background(), s)
+			if err != nil {
+				t.Fatalf("could not create a session: %v", err)
+			}
+		}
+	}
+
+	waitForCleanup := func() {
+		// wait for cleanup after 20 ms
+		time.Sleep(time.Millisecond * 21)
+	}
+
+	createSessions()
+	waitForCleanup()
+	assertErrorChannelIsEmpty(t, store.CleanupErr())
+
+	retrievedSessions, err := store.FetchByUserKey(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("unexpected error while fetching the sessions by user key: %v", err)
+	}
+	if len(retrievedSessions) > 0 {
+		t.Fatal("expected sessions to be empty after cleanup")
+	}
+
+	createSessions()
+	store.StopCleanup()
+	waitForCleanup()
+
+	retrievedSessions, err = store.FetchByUserKey(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("unexpected error while fetching the sessions by user key: %v", err)
+	}
+	if len(retrievedSessions) == 0 {
+		t.Fatal("expected to find expired sessions after stopping cleanup, but none were found")
+	}
+}
+
 func assertSessionEquals(t *testing.T, actual sessionup.Session, expected sessionup.Session) {
 	t.Helper()
 
@@ -200,6 +285,19 @@ func assertSessionsDoesNotContain(t *testing.T, needle sessionup.Session, haysta
 	for _, current := range haystack {
 		if sessionEquals(current, needle) {
 			t.Errorf("expected not to find session %v among retrieved sessions, but it was found", needle)
+			return
+		}
+	}
+}
+
+func assertErrorChannelIsEmpty(t *testing.T, errChan <-chan error) {
+	t.Helper()
+
+	for {
+		select {
+		case err := <-errChan:
+			t.Fatalf("unexpected error during cleanup of expired sessions: %v", err)
+		default:
 			return
 		}
 	}

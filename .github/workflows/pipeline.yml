@@ -18,7 +18,7 @@ jobs:
         run: go mod download
 
       - name: Go test
-        run: go test -short ./...
+        run: go test ./...
   lint:
     name: Run linters
     runs-on: ubuntu-latest

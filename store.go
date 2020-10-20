@@ -1,3 +1,6 @@
+/*
+Package sqlitestore implements sessionup.Store interface for SQLite database.
+*/
 package sqlitestore
 
 import (
@@ -6,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/swithek/sessionup"
@@ -24,15 +28,26 @@ const createTableQuery = `CREATE TABLE IF NOT EXISTS %s (
 type SqliteStore struct {
 	db        *sql.DB
 	tableName string
+	stopChan  chan struct{}
+	errChan   chan error
 }
 
-func New(db *sql.DB, tableName string) (*SqliteStore, error) {
-	store := &SqliteStore{db: db, tableName: tableName}
+// New returns a fresh instance of SqliteStore.
+// tableName parameter determines the name of the table that will be used for
+// sessions. If it does not exist, it will be created.
+// Duration parameter determines how often the cleanup function wil be called
+// to remove the expired sessions. Setting it to 0 will prevent cleanup from
+// being activated.
+func New(db *sql.DB, tableName string, duration time.Duration) (*SqliteStore, error) {
+	store := &SqliteStore{db: db, tableName: tableName, errChan: make(chan error)}
 	_, err := store.db.Exec(fmt.Sprintf(createTableQuery, store.tableName))
 	if err != nil {
 		return nil, err
 	}
-	//TODO: create channels for cleanup and stuff
+
+	if duration > 0 {
+		go store.startCleanup(duration)
+	}
 	return store, nil
 }
 
@@ -152,4 +167,45 @@ func (store *SqliteStore) DeleteByUserKey(ctx context.Context, key string, sessi
 	query := fmt.Sprintf("DELETE FROM %s WHERE user_key = $1;", store.tableName)
 	_, err := store.db.ExecContext(ctx, query, key)
 	return err
+}
+
+// deleteExpired deletes all expired sessions.
+func (store *SqliteStore) deleteExpired() error {
+	query := fmt.Sprintf("DELETE FROM %s WHERE expires_at < datetime('now', 'localtime');", store.tableName)
+	_, err := store.db.Exec(query)
+	return err
+}
+
+func (store *SqliteStore) startCleanup(duration time.Duration) {
+	store.stopChan = make(chan struct{})
+	timer := time.NewTicker(duration)
+	for {
+		select {
+		case <-timer.C:
+			if err := store.deleteExpired(); err != nil {
+				store.errChan <- err
+			}
+
+		case <-store.stopChan:
+			timer.Stop()
+			return
+		}
+	}
+}
+
+// StopCleanup terminates the automatic cleanup process.
+// Useful for testing and cases when store is used only temporarily.
+// In order to restart the cleanup, a new store must be created.
+func (store *SqliteStore) StopCleanup() {
+	if store.stopChan != nil {
+		store.stopChan <- struct{}{}
+	}
+}
+
+// CleanupErr returns a receive-only channel to get errors produced during the
+// automatic cleanup.
+// NOTE: channel must be drained in order for the cleanup process to be able to
+// continue.
+func (store *SqliteStore) CleanupErr() <-chan error {
+	return store.errChan
 }

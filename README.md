@@ -25,14 +25,3 @@ if err != nil {
 
 manager := sessionup.NewManager(store)
 ```
-
-TODO: Links to continue:
-https://github.com/swithek/sessionup/blob/master/store.go
-
-https://stackoverflow.com/questions/25965584/separating-unit-tests-and-integration-tests-in-go
-
-https://github.com/swithek/sessionup-pgstore/blob/master/pgstore.go
-https://github.com/swithek/sessionup-pgstore/blob/master/pgstore_test.go
-
-https://github.com/mattn/go-sqlite3/blob/b4f5cc77d1cca1470922e916c9f775ef17d2d78f/error_test.go
-https://github.com/mattn/go-sqlite3/blob/b4f5cc77d1cca1470922e916c9f775ef17d2d78f/error_test.go
