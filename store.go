@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"strings"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/swithek/sessionup"
@@ -126,4 +127,29 @@ func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]ses
 	}
 
 	return foundSessions, nil
+}
+
+// DeleteByID implements sessionup.Store interface's DeleteByID method.
+func (store *SqliteStore) DeleteByID(ctx context.Context, id string) error {
+	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1;", store.tableName)
+	_, err := store.db.ExecContext(ctx, query, id)
+	return err
+}
+
+// DeleteByUserKey implements sessionup.Store interface's DeleteByUserKey method.
+func (store *SqliteStore) DeleteByUserKey(ctx context.Context, key string, sessionIDsToKeep ...string) error {
+	if len(sessionIDsToKeep) > 0 {
+		params := make([]interface{}, 1)
+		params[0] = key
+		for _, id := range sessionIDsToKeep {
+			params = append(params, id)
+		}
+		query := fmt.Sprintf("DELETE FROM %s WHERE user_key = $1 AND id NOT IN (?"+strings.Repeat(",?", len(params)-2)+");", store.tableName)
+		_, err := store.db.ExecContext(ctx, query, params...)
+		return err
+	}
+
+	query := fmt.Sprintf("DELETE FROM %s WHERE user_key = $1;", store.tableName)
+	_, err := store.db.ExecContext(ctx, query, key)
+	return err
 }

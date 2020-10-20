@@ -25,20 +25,20 @@ func TestSessionByIDIntegration(t *testing.T) {
 		t.Fatalf("could not create a new sessions table: %v", err)
 	}
 
+	id := "id"
 	session := sessionup.Session{
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(time.Hour * 1),
-		ID:        "id",
+		ID:        id,
 		UserKey:   "key",
 		IP:        net.ParseIP("127.0.0.1"),
 	}
-	ctx := context.Background()
-	err = store.Create(ctx, session)
+	err = store.Create(context.Background(), session)
 	if err != nil {
 		t.Fatalf("could not create a session: %v", err)
 	}
 
-	retrievedSession, ok, err := store.FetchByID(ctx, "id")
+	retrievedSession, ok, err := store.FetchByID(context.Background(), id)
 	if err != nil {
 		t.Fatalf("unexpected error while fetching the session by its ID: %v", err)
 	}
@@ -46,6 +46,19 @@ func TestSessionByIDIntegration(t *testing.T) {
 		t.Fatalf("expected to find session by its ID, but it was not found")
 	}
 	assertSessionEquals(t, retrievedSession, session)
+
+	err = store.DeleteByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error while deleting the session by its ID: %v", err)
+	}
+
+	_, ok, err = store.FetchByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error while fetching again the session by its ID: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected to no longer find the session by its ID after deleting it, but it was found")
+	}
 }
 
 func TestSessionsByUserKeyIntegration(t *testing.T) {
@@ -75,17 +88,23 @@ func TestSessionsByUserKeyIntegration(t *testing.T) {
 		UserKey:   "key",
 		IP:        net.ParseIP("127.0.0.1"),
 	}
-	ctx := context.Background()
-	err = store.Create(ctx, validSession)
-	if err != nil {
-		t.Fatalf("could not create a session: %v", err)
+	sessionToBeDeleted := sessionup.Session{
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour * 1),
+		ID:        "to_be_deleted",
+		UserKey:   "key",
+		IP:        net.ParseIP("127.0.01"),
 	}
-	err = store.Create(ctx, expiredSession)
-	if err != nil {
-		t.Fatalf("could not create a session: %v", err)
+	sessions := []sessionup.Session{validSession, expiredSession, sessionToBeDeleted}
+
+	for _, s := range sessions {
+		err = store.Create(context.Background(), s)
+		if err != nil {
+			t.Fatalf("could not create a session: %v", err)
+		}
 	}
 
-	actualSessions, err := store.FetchByUserKey(ctx, "key")
+	actualSessions, err := store.FetchByUserKey(context.Background(), "key")
 	if err != nil {
 		t.Fatalf("unexpected error while fetching the sessions by user key: %v", err)
 	}
@@ -94,6 +113,31 @@ func TestSessionsByUserKeyIntegration(t *testing.T) {
 	}
 	assertSessionsContains(t, validSession, actualSessions)
 	assertSessionsContains(t, expiredSession, actualSessions)
+	assertSessionsContains(t, sessionToBeDeleted, actualSessions)
+
+	err = store.DeleteByUserKey(context.Background(), "key", "valid", "expired")
+	if err != nil {
+		t.Fatalf("unexpected error while deleting sessions with exceptions: %v", err)
+	}
+	sessionsAfterDeletion, err := store.FetchByUserKey(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("unexpected error while fetching again the sessions by user key: %v", err)
+	}
+	assertSessionsContains(t, validSession, sessionsAfterDeletion)
+	assertSessionsContains(t, expiredSession, sessionsAfterDeletion)
+	assertSessionsDoesNotContain(t, sessionToBeDeleted, sessionsAfterDeletion)
+
+	err = store.DeleteByUserKey(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("unexpected error while deleting all sessions by key: %v", err)
+	}
+	sessionsAfterSecondDeletion, err := store.FetchByUserKey(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("unexpected error while fetching for the third time sessions by user key: %v", err)
+	}
+	if len(sessionsAfterSecondDeletion) > 0 {
+		t.Fatal("expected sessions to be empty after deletion")
+	}
 }
 
 func assertSessionEquals(t *testing.T, actual sessionup.Session, expected sessionup.Session) {
@@ -148,4 +192,15 @@ func assertSessionsContains(t *testing.T, needle sessionup.Session, haystack []s
 	}
 
 	t.Errorf("could not find session %v among sessions %v", needle, haystack)
+}
+
+func assertSessionsDoesNotContain(t *testing.T, needle sessionup.Session, haystack []sessionup.Session) {
+	t.Helper()
+
+	for _, current := range haystack {
+		if sessionEquals(current, needle) {
+			t.Errorf("expected not to find session %v among retrieved sessions, but it was found", needle)
+			return
+		}
+	}
 }

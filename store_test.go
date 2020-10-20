@@ -3,6 +3,7 @@ package sqlitestore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net"
@@ -89,10 +90,7 @@ func TestCreate(t *testing.T) {
 			if err != testDefinition.ExpectedError {
 				t.Errorf("want %v, got %v", testDefinition.ExpectedError, err)
 			}
-
-			if err = mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("there were unfulfilled expectations: %v", err)
-			}
+			assertExpectationsWereMet(t, mock)
 		})
 	}
 }
@@ -104,19 +102,13 @@ func TestFetchByID(t *testing.T) {
 
 	expectNoError := func() check {
 		return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
-			t.Helper()
-			if actual != nil {
-				t.Errorf("expected no error but got one: %v", actual)
-			}
+			assertNoError(t, actual)
 		}
 	}
 
 	expectAnError := func(expected error) check {
 		return func(t *testing.T, _ sessionup.Session, _ bool, actual error) {
-			t.Helper()
-			if actual != expected {
-				t.Errorf("expected an error %v but got %v", expected, actual)
-			}
+			assertError(t, expected, actual)
 		}
 	}
 
@@ -190,10 +182,7 @@ func TestFetchByID(t *testing.T) {
 			for _, currentCheck := range testDefinition.Checks {
 				currentCheck(t, retrievedSession, ok, err)
 			}
-
-			if err = mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("there were unfulfilled expectations: %v", err)
-			}
+			assertExpectationsWereMet(t, mock)
 		})
 	}
 }
@@ -205,19 +194,13 @@ func TestFetchByUserKey(t *testing.T) {
 
 	expectNoError := func() check {
 		return func(t *testing.T, _ []sessionup.Session, actual error) {
-			t.Helper()
-			if actual != nil {
-				t.Errorf("expected no error but got one: %v", actual)
-			}
+			assertNoError(t, actual)
 		}
 	}
 
 	expectAnError := func(expected error) check {
 		return func(t *testing.T, _ []sessionup.Session, actual error) {
-			t.Helper()
-			if actual != expected {
-				t.Errorf("expected an error %v but got %v", expected, actual)
-			}
+			assertError(t, expected, actual)
 		}
 	}
 
@@ -289,10 +272,89 @@ func TestFetchByUserKey(t *testing.T) {
 			for _, currentCheck := range testDefinition.Checks {
 				currentCheck(t, retrievedSessions, err)
 			}
+			assertExpectationsWereMet(t, mock)
+		})
+	}
+}
 
-			if err = mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("there were unfulfilled expectations: %v", err)
+func TestDeleteByID(t *testing.T) {
+	db, mock := mockDB(t)
+	defer db.Close()
+	id := "id"
+	store := SqliteStore{db: db, tableName: "sessions"}
+	query := "DELETE FROM sessions WHERE id = $1;"
+
+	t.Run("when there is an error, it should return it", func(t *testing.T) {
+		mock.ExpectExec(query).WithArgs(id).WillReturnError(expectedDiskError)
+		err := store.DeleteByID(context.Background(), id)
+		if err == nil {
+			t.Errorf("expected an error but did not get one")
+		}
+		assertExpectationsWereMet(t, mock)
+	})
+
+	t.Run("deletes the session in DB", func(t *testing.T) {
+		mock.ExpectExec(query).WithArgs(id).WillReturnResult(sqlmock.NewResult(0, 1))
+		err := store.DeleteByID(context.Background(), id)
+		if err != nil {
+			t.Errorf("expected no error but got one: %v", err)
+		}
+		assertExpectationsWereMet(t, mock)
+	})
+}
+
+func TestDeleteByUserKey(t *testing.T) {
+	db, mock := mockDB(t)
+	defer db.Close()
+	key := "key"
+	ids := []string{"id1", "id2", "id3"}
+	store := SqliteStore{db: db, tableName: "sessions"}
+
+	tests := map[string]struct {
+		Expect           func()
+		SessionIDsToKeep []string
+		ExpectedError    error
+	}{
+		"should return errors when deleting": {
+			Expect: func() {
+				query := "DELETE FROM sessions WHERE user_key = $1;"
+				mock.ExpectExec(query).WithArgs(key).WillReturnError(expectedDiskError)
+			},
+			ExpectedError: expectedDiskError,
+		},
+		"deletes all sessions by user key": {
+			Expect: func() {
+				query := "DELETE FROM sessions WHERE user_key = $1;"
+				mock.ExpectExec(query).WithArgs(key).WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+		},
+		"should return errors when deleting with exceptions": {
+			Expect: func() {
+				query := "DELETE FROM sessions WHERE user_key = $1 AND id NOT IN (?,?,?);"
+				expectedParams := append([]driver.Value{key}, "id1", "id2", "id3")
+				mock.ExpectExec(query).WithArgs(expectedParams...).WillReturnError(expectedDiskError)
+			},
+			SessionIDsToKeep: ids,
+			ExpectedError:    expectedDiskError,
+		},
+		"deletes all sessions except the IDs given in parameter": {
+			Expect: func() {
+				query := "DELETE FROM sessions WHERE user_key = $1 AND id NOT IN (?,?,?);"
+				expectedParams := append([]driver.Value{key}, "id1", "id2", "id3")
+				mock.ExpectExec(query).WithArgs(expectedParams...).WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+			SessionIDsToKeep: ids,
+		},
+	}
+
+	for testName, testDescription := range tests {
+		t.Run(testName, func(t *testing.T) {
+			testDescription.Expect()
+			err := store.DeleteByUserKey(context.Background(), key, testDescription.SessionIDsToKeep...)
+			if err != testDescription.ExpectedError {
+				t.Errorf("expected an error %v but got %v", testDescription.ExpectedError, err)
 			}
+			assertExpectationsWereMet(t, mock)
 		})
 	}
 }
@@ -329,4 +391,25 @@ func mockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 		t.Fatalf("did not expect an error while opening a stub database connection, got one: %v", err)
 	}
 	return db, mock
+}
+
+func assertExpectationsWereMet(t *testing.T, mock sqlmock.Sqlmock) {
+	t.Helper()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expectations: %v", err)
+	}
+}
+
+func assertError(t *testing.T, expected error, actual error) {
+	t.Helper()
+	if actual != expected {
+		t.Errorf("expected an error %v but got %v", expected, actual)
+	}
+}
+
+func assertNoError(t *testing.T, actual error) {
+	t.Helper()
+	if actual != nil {
+		t.Errorf("expected no error but got one: %v", actual)
+	}
 }
