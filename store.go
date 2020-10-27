@@ -6,6 +6,7 @@ package sqlitestore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -66,8 +67,8 @@ func (store *SqliteStore) Create(ctx context.Context, session sessionup.Session)
 		wrapNullString(session.Agent.OS),
 		wrapNullString(session.Agent.Browser),
 	)
-	sqliteError, ok := err.(sqlite3.Error)
-	if ok && sqliteError.ExtendedCode == sqlite3.ErrConstraintUnique {
+	var sqliteError sqlite3.Error
+	if errors.As(err, &sqliteError) && sqliteError.Code == sqlite3.ErrConstraint {
 		return sessionup.ErrDuplicateID
 	}
 	return err
@@ -85,14 +86,14 @@ func wrapNullString(s string) sql.NullString {
 
 // FetchByID implements sessionup.Store interface's FetchByID method.
 func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.Session, bool, error) {
-	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND expires_at > datetime('now', 'localtime');", store.tableName)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND expires_at > datetime('now', 'localtime');", store.tableName) // nolint:gosec // Concatenation is used for table name, not bound parameters
 	row := store.db.QueryRowContext(ctx, query, id)
 
 	var session sessionup.Session
 	var ip, os, browser sql.NullString
 
 	err := row.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return sessionup.Session{}, false, nil
 	} else if err != nil {
 		return sessionup.Session{}, false, err
@@ -109,9 +110,9 @@ func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.S
 
 // FetchByUserKey implements sessionup.Store interface's FetchByUserKey method.
 func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]sessionup.Session, error) {
-	query := fmt.Sprintf("SELECT * FROM %s WHERE user_key = $1;", store.tableName)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE user_key = $1;", store.tableName) // nolint:gosec // Concatenation is used for table name, not bound parameters
 	rows, err := store.db.QueryContext(ctx, query, key)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -124,7 +125,7 @@ func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]ses
 
 		err := rows.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser)
 		if err != nil {
-			rows.Close()
+			defer rows.Close()
 			return nil, err
 		}
 

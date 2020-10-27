@@ -49,7 +49,7 @@ func TestCreate(t *testing.T) {
 					session.Agent.OS,
 					session.Agent.Browser,
 				).WillReturnError(sqlite3.Error{
-					ExtendedCode: sqlite3.ErrConstraintUnique,
+					Code: sqlite3.ErrConstraint,
 				})
 			},
 			ExpectedError: sessionup.ErrDuplicateID,
@@ -87,7 +87,7 @@ func TestCreate(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			testDefinition.Expect()
 			err := store.Create(context.Background(), session)
-			if err != testDefinition.ExpectedError {
+			if !errors.Is(err, testDefinition.ExpectedError) {
 				t.Errorf("want %v, got %v", testDefinition.ExpectedError, err)
 			}
 			assertExpectationsWereMet(t, mock)
@@ -377,7 +377,7 @@ func TestDeleteByUserKey(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			testDescription.Expect()
 			err := store.DeleteByUserKey(context.Background(), key, testDescription.SessionIDsToKeep...)
-			if err != testDescription.ExpectedError {
+			if !errors.Is(err, testDescription.ExpectedError) {
 				t.Errorf("expected an error %v but got %v", testDescription.ExpectedError, err)
 			}
 			assertExpectationsWereMet(t, mock)
@@ -424,7 +424,7 @@ func assertExpectationsWereMet(t *testing.T, mock sqlmock.Sqlmock) {
 
 func assertError(t *testing.T, expected error, actual error) {
 	t.Helper()
-	if actual != expected {
+	if !errors.Is(actual, expected) {
 		t.Errorf("expected an error %v but got %v", expected, actual)
 	}
 }

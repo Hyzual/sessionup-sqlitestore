@@ -1,0 +1,7 @@
+linters:
+  presets:
+    - bugs
+    - unused
+    - format
+  disable:
+    - scopelint # Replaced by exportloopref
