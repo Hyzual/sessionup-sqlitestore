@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,13 +24,14 @@ func TestCreate(t *testing.T) {
 	defer db.Close()
 	store := SqliteStore{db: db, tableName: "sessions"}
 
-	query := "INSERT INTO sessions VALUES ($1, $2, $3, $4, $5, $6, $7);"
+	query := "INSERT INTO sessions VALUES ($1, $2, $3, $4, $5, $6, $7, $8);"
 	session := sessionup.Session{
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now(),
 		ID:        "id",
 		UserKey:   "key",
 		IP:        net.ParseIP("127.0.0.1"),
+		Meta:      map[string]string{"test": "1"},
 	}
 	session.Agent.OS = "GNU/Linux"
 	session.Agent.Browser = "Firefox"
@@ -48,6 +50,7 @@ func TestCreate(t *testing.T) {
 					session.IP.String(),
 					session.Agent.OS,
 					session.Agent.Browser,
+					"test:1;",
 				).WillReturnError(sqlite3.Error{
 					Code: sqlite3.ErrConstraint,
 				})
@@ -64,6 +67,7 @@ func TestCreate(t *testing.T) {
 					session.IP.String(),
 					session.Agent.OS,
 					session.Agent.Browser,
+					"test:1;",
 				).WillReturnError(errDiskError)
 			},
 			ExpectedError: errDiskError,
@@ -78,6 +82,7 @@ func TestCreate(t *testing.T) {
 					session.IP.String(),
 					session.Agent.OS,
 					session.Agent.Browser,
+					"test:1;",
 				).WillReturnResult(sqlmock.NewResult(0, 1))
 			},
 		},
@@ -162,6 +167,7 @@ func TestFetchByID(t *testing.T) {
 		ID:        "id",
 		UserKey:   "key",
 		IP:        net.ParseIP("127.0.0.1"),
+		Meta:      map[string]string{"test": "1", "": "val"},
 	}
 	session.Agent.OS = "GNU/Linux"
 	session.Agent.Browser = "Firefox"
@@ -190,8 +196,8 @@ func TestFetchByID(t *testing.T) {
 		},
 		"should return a Session and found = true": {
 			Expect: func() {
-				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser"}).
-					AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP.String(), session.Agent.OS, session.Agent.Browser)
+				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser", "metadata"}).
+					AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP.String(), session.Agent.OS, session.Agent.Browser, "test:1;:val;")
 				mock.ExpectQuery(query).WithArgs(session.ID).WillReturnRows(rows)
 			},
 			Checks: checks(
@@ -249,7 +255,11 @@ func TestFetchByUserKey(t *testing.T) {
 	generateSessions := func() []sessionup.Session {
 		var res []sessionup.Session
 		for i := 0; i < 3; i++ {
-			res = append(res, sessionup.Session{ID: fmt.Sprintf("id%d", i)})
+			res = append(res, sessionup.Session{
+				ID:      fmt.Sprintf("id%d", i),
+				UserKey: key,
+				Meta:    map[string]string{"test": "1", "": "val"},
+			})
 		}
 		return res
 	}
@@ -278,9 +288,9 @@ func TestFetchByUserKey(t *testing.T) {
 		},
 		"should return found sessions": {
 			Expect: func() {
-				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser"})
+				rows := sqlmock.NewRows([]string{"created_at", "expires_at", "id", "user_key", "ip", "agent_os", "agent_browser", "metadata"})
 				for _, session := range generateSessions() {
-					rows.AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP, session.Agent.OS, session.Agent.Browser)
+					rows.AddRow(session.CreatedAt, session.ExpiresAt, session.ID, session.UserKey, session.IP, session.Agent.OS, session.Agent.Browser, "test:1;:val;")
 				}
 				mock.ExpectQuery(query).WithArgs(key).WillReturnRows(rows)
 			},
@@ -301,6 +311,53 @@ func TestFetchByUserKey(t *testing.T) {
 			assertExpectationsWereMet(t, mock)
 		})
 	}
+}
+
+func TestSerializeMetadata(t *testing.T) {
+	t.Run("Given nil, it will return a NULL string", func(t *testing.T) {
+		actual := serializeMetadata(nil)
+		if actual.Valid {
+			t.Errorf("want a NULL string, got %q", actual.String)
+		}
+	})
+
+	t.Run("Given a map of key/values, it will serialize it to a colon-separated string of key:value", func(t *testing.T) {
+		source := map[string]string{"": "1", "key": "", "test1": "2", "3": "", "hello": "hello"}
+		actual := serializeMetadata(source)
+		if !actual.Valid {
+			t.Fatalf("want a non-NULL string, got a NULL string")
+		}
+		serialized := actual.String
+		assertStringContains(t, serialized, ":1;")
+		assertStringContains(t, serialized, "key:;")
+		assertStringContains(t, serialized, "test1:2;")
+		assertStringContains(t, serialized, "3:;")
+		assertStringContains(t, serialized, "hello:hello;")
+	})
+}
+
+func assertStringContains(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if !strings.Contains(haystack, needle) {
+		t.Errorf("expected haystack %q to contain %q but it did not", haystack, needle)
+	}
+}
+
+func TestParseMetadata(t *testing.T) {
+	t.Run("Given NULL string, it will return nil", func(t *testing.T) {
+		actual := parseMetadata(wrapNullString(""))
+		if actual != nil {
+			t.Errorf("want nil, got %v", actual)
+		}
+	})
+
+	t.Run("Given a colon-separated list of key:value, it will split it into a map", func(t *testing.T) {
+		actual := parseMetadata(wrapNullString("test:1;:;3:3"))
+		expected := map[string]string{"test": "1", "": "", "3": "3"}
+		if !reflect.DeepEqual(expected, actual) {
+			t.Errorf("want %v, got %v", expected, actual)
+		}
+	})
 }
 
 func TestDeleteByID(t *testing.T) {

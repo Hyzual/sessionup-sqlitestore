@@ -23,8 +23,14 @@ const createTableQuery = `CREATE TABLE IF NOT EXISTS %s (
 	user_key TEXT NOT NULL,
 	ip TEXT,
 	agent_os TEXT,
-	agent_browser TEXT
+	agent_browser TEXT,
+	metadata TEXT
 );`
+
+const (
+	PART_SEPARATOR      = ";"
+	KEY_VALUE_SEPARATOR = ":"
+)
 
 // SqliteStore is a SQLite implementation of sessionup.Store.
 type SqliteStore struct {
@@ -55,7 +61,7 @@ func New(db *sql.DB, tableName string, duration time.Duration) (*SqliteStore, er
 
 // Create implements sessionup.Store interface's Create method.
 func (store *SqliteStore) Create(ctx context.Context, session sessionup.Session) error {
-	query := fmt.Sprintf("INSERT INTO %s VALUES ($1, $2, $3, $4, $5, $6, $7);", store.tableName)
+	query := fmt.Sprintf("INSERT INTO %s VALUES ($1, $2, $3, $4, $5, $6, $7, $8);", store.tableName)
 	_, err := store.db.ExecContext(
 		ctx,
 		query,
@@ -66,6 +72,7 @@ func (store *SqliteStore) Create(ctx context.Context, session sessionup.Session)
 		wrapNullString(session.IP.String()),
 		wrapNullString(session.Agent.OS),
 		wrapNullString(session.Agent.Browser),
+		serializeMetadata(session.Meta),
 	)
 	var sqliteError sqlite3.Error
 	if errors.As(err, &sqliteError) && sqliteError.Code == sqlite3.ErrConstraint {
@@ -90,9 +97,9 @@ func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.S
 	row := store.db.QueryRowContext(ctx, query, id)
 
 	var session sessionup.Session
-	var ip, os, browser sql.NullString
+	var ip, os, browser, metadata sql.NullString
 
-	err := row.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser)
+	err := row.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser, &metadata)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessionup.Session{}, false, nil
 	} else if err != nil {
@@ -105,6 +112,7 @@ func (store *SqliteStore) FetchByID(ctx context.Context, id string) (sessionup.S
 
 	session.Agent.OS = os.String
 	session.Agent.Browser = browser.String
+	session.Meta = parseMetadata(metadata)
 	return session, true, nil
 }
 
@@ -121,9 +129,9 @@ func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]ses
 	var foundSessions []sessionup.Session
 	for rows.Next() {
 		var session sessionup.Session
-		var ip, os, browser sql.NullString
+		var ip, os, browser, metadata sql.NullString
 
-		err := rows.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser)
+		err := rows.Scan(&session.CreatedAt, &session.ExpiresAt, &session.ID, &session.UserKey, &ip, &os, &browser, &metadata)
 		if err != nil {
 			defer rows.Close()
 			return nil, err
@@ -135,6 +143,7 @@ func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]ses
 
 		session.Agent.OS = os.String
 		session.Agent.Browser = browser.String
+		session.Meta = parseMetadata(metadata)
 
 		foundSessions = append(foundSessions, session)
 	}
@@ -144,6 +153,34 @@ func (store *SqliteStore) FetchByUserKey(ctx context.Context, key string) ([]ses
 	}
 
 	return foundSessions, nil
+}
+
+// serializeMetadata converts metadata map of string to a string to be saved in DB.
+func serializeMetadata(source map[string]string) sql.NullString {
+	var builder strings.Builder
+	for key, value := range source {
+		builder.WriteString(fmt.Sprintf("%s:%s;", key, value))
+	}
+	return wrapNullString(builder.String())
+}
+
+// parseMetadata converts metadata string from DB into a map of strings.
+func parseMetadata(source sql.NullString) map[string]string {
+	if !source.Valid {
+		return nil
+	}
+
+	meta := make(map[string]string)
+	parts := strings.Split(source.String, PART_SEPARATOR)
+	for _, part := range parts {
+		keyValue := strings.Split(part, KEY_VALUE_SEPARATOR)
+		if len(keyValue) != 2 {
+			continue
+		}
+
+		meta[keyValue[0]] = keyValue[1]
+	}
+	return meta
 }
 
 // DeleteByID implements sessionup.Store interface's DeleteByID method.
