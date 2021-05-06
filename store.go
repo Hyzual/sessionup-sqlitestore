@@ -193,8 +193,8 @@ func (store *SqliteStore) DeleteByID(ctx context.Context, id string) error {
 // DeleteByUserKey implements sessionup.Store interface's DeleteByUserKey method.
 func (store *SqliteStore) DeleteByUserKey(ctx context.Context, key string, sessionIDsToKeep ...string) error {
 	if len(sessionIDsToKeep) > 0 {
-		params := make([]interface{}, 1)
-		params[0] = key
+		params := make([]interface{}, 0)
+		params = append(params, key)
 		for _, id := range sessionIDsToKeep {
 			params = append(params, id)
 		}
