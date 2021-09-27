@@ -3,7 +3,7 @@ on:
   push:
     branches-ignore:
      - 'dependabot/**'
-  pull_request_target:
+  pull_request:
 
 permissions: read-all
 
@@ -66,7 +66,4 @@ jobs:
         with:
           file: ./coverage.xml
           fail_ci_if_error: true
-
-
-
 
